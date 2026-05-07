@@ -3,9 +3,8 @@ FROM python:3.11-slim AS builder
 
 WORKDIR /build
 
-# gcc for native extensions; libcurl-dev for curl_cffi
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends gcc libcurl4-openssl-dev && \
+    apt-get install -y --no-install-recommends gcc && \
     rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
