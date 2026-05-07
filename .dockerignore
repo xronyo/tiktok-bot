@@ -1,0 +1,32 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Local runtime dirs (created fresh in container)
+data/
+downloads/
+processed/
+bin/
+
+# Logs
+*.log
+nohup.out
+
+# Git
+.git/
+.gitignore
+
+# OS
+.DS_Store
+
+# Railway / Docker meta (not needed inside image)
+railway.toml
+.dockerignore
+Dockerfile
+
+# Docs
+*.md

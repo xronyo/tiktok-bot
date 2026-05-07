@@ -1,0 +1,12 @@
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "python -u main.py"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10
+
+# Health check — Railway marks the service healthy once the process is stable
+# The bot doesn't serve HTTP, so we rely on process liveness only.
+healthcheckPath = ""
