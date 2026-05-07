@@ -363,6 +363,49 @@ async def cmd_go(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def cmd_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from downloader import _resolve_cookies
+    import os
+    path = _resolve_cookies()
+    if path:
+        size = os.path.getsize(path)
+        source = (
+            "TIKTOK_COOKIES_FILE env" if os.environ.get("TIKTOK_COOKIES_FILE") == path
+            else "TIKTOK_COOKIES env (decoded)" if "tiktok_cookies_" in path
+            else "local cookies.txt"
+        )
+        # Count domains in the cookie file
+        try:
+            with open(path) as f:
+                lines = [l for l in f if not l.startswith("#") and l.strip()]
+            domains = {l.split("\t")[0] for l in lines if "\t" in l}
+        except Exception:
+            lines, domains = [], set()
+        await update.message.reply_text(
+            f"*Cookie Status: Active*\n\n"
+            f"Source: `{source}`\n"
+            f"Size: `{size:,}` bytes\n"
+            f"Lines: `{len(lines)}`\n"
+            f"Domains: `{', '.join(sorted(domains)[:5]) or 'unknown'}`\n\n"
+            f"Cookies expire ~30 days after export.\n"
+            f"Re-export from browser if downloads start failing.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    else:
+        await update.message.reply_text(
+            "*Cookie Status: None*\n\n"
+            "Downloads may fail with `status code 0`.\n\n"
+            "*To fix:*\n"
+            "1. Install *Get cookies.txt LOCALLY* Chrome extension\n"
+            "2. Log into tiktok.com, export cookies.txt\n"
+            "3. Place file at `~/tiktok_bot/cookies.txt`\n\n"
+            "*For Railway:*\n"
+            "`base64 < cookies.txt | tr -d '\\n'`\n"
+            "→ set as `TIKTOK_COOKIES` env var in dashboard",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(format_help(), parse_mode=ParseMode.MARKDOWN)
 
@@ -457,6 +500,7 @@ def main():
     app.add_handler(CommandHandler("time", cmd_time))
     app.add_handler(CommandHandler("stop", cmd_stop))
     app.add_handler(CommandHandler("go", cmd_go))
+    app.add_handler(CommandHandler("cookies", cmd_cookies))
     app.add_handler(CommandHandler("help", cmd_help))
 
     # ── message handler ───────────────────────────────────────────────────────
