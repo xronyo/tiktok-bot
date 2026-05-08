@@ -9,28 +9,54 @@ import config
 logger = logging.getLogger(__name__)
 
 
+def _probe_has_audio(path: str) -> bool:
+    result = subprocess.run(
+        [config.FFMPEG_BIN, "-i", path, "-hide_banner"],
+        capture_output=True, text=True, timeout=30,
+    )
+    return "Audio:" in result.stderr
+
+
 def _random_name(ext: str = "mp4") -> str:
     return "".join(random.choices(string.ascii_lowercase + string.digits, k=12)) + f".{ext}"
 
 
 def process_video(input_path: str) -> tuple:
     """
-    Strip metadata from the video. Streams are copied without re-encoding
-    so there is zero quality loss and no file size inflation.
+    Re-encode at CRF 18 (near-lossless) with a 1.01x speed nudge that
+    breaks audio/video fingerprints without any perceptible quality change.
     Returns (output_path, file_size_bytes).
     """
     output_path = os.path.join(config.PROCESSED_DIR, _random_name())
+    has_audio   = _probe_has_audio(input_path)
 
-    cmd = [
-        config.FFMPEG_BIN, "-y",
-        "-i", input_path,
-        "-c", "copy",
-        "-map_metadata", "-1",
-        "-movflags", "+faststart",
-        output_path,
-    ]
+    vf = "setpts=PTS/1.01"
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if has_audio:
+        cmd = [
+            config.FFMPEG_BIN, "-y",
+            "-i", input_path,
+            "-vf", vf,
+            "-af", "atempo=1.01",
+            "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+            "-c:a", "aac", "-b:a", "128k",
+            "-map_metadata", "-1",
+            "-movflags", "+faststart",
+            output_path,
+        ]
+    else:
+        cmd = [
+            config.FFMPEG_BIN, "-y",
+            "-i", input_path,
+            "-vf", vf,
+            "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+            "-an",
+            "-map_metadata", "-1",
+            "-movflags", "+faststart",
+            output_path,
+        ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     if result.returncode != 0:
         raise RuntimeError(f"FFmpeg failed:\n{result.stderr[-500:]}")
 
