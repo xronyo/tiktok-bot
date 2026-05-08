@@ -19,6 +19,32 @@ _HEADERS = {
     "Accept":  "application/json, */*",
 }
 
+# Music CDN hostnames — tikwm sometimes returns audio tracks instead of videos
+_MUSIC_CDN_HOSTS = ("v16-ies-music.", "v19-ies-music.", "v26-ies-music.", "ies-music.")
+
+
+def _resolve_short_url(url: str) -> str:
+    """Follow redirects to get the canonical long-form TikTok URL."""
+    req = urllib.request.Request(url, headers={"User-Agent": _HEADERS["User-Agent"]},
+                                  method="HEAD")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.url
+    except Exception:
+        # urlopen may raise on redirect chains; grab the final URL from the exception
+        return url
+
+
+def _query_tikwm(url: str) -> dict:
+    body = urllib.parse.urlencode({"url": url, "hd": "1"}).encode()
+    req = urllib.request.Request(
+        "https://www.tikwm.com/api/",
+        data=body,
+        headers={**_HEADERS, "Content-Type": "application/x-www-form-urlencoded"},
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read())
+
 
 def download_tiktok(url: str) -> str:
     """
@@ -28,44 +54,72 @@ def download_tiktok(url: str) -> str:
     """
     os.makedirs(config.DOWNLOAD_DIR, exist_ok=True)
 
-    # ── Step 1: resolve video URL (POST with hd=1 for highest quality) ────────
-    body = urllib.parse.urlencode({"url": url, "hd": "1"}).encode()
-    req = urllib.request.Request(
-        "https://www.tikwm.com/api/",
-        data=body,
-        headers={**_HEADERS, "Content-Type": "application/x-www-form-urlencoded"},
-    )
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        data = json.loads(resp.read())
+    # ── Step 1: resolve short URLs before querying tikwm ─────────────────────
+    # vm.tiktok.com / vt.tiktok.com short links confuse tikwm and cause it to
+    # return the audio track (size=0) instead of the video.
+    canonical = url
+    if any(h in url for h in ("vm.tiktok.com", "vt.tiktok.com", "m.tiktok.com")):
+        canonical = _resolve_short_url(url)
+        if canonical != url:
+            logger.info(f"Resolved short URL → {canonical}")
+
+    # ── Step 2: resolve video URL via tikwm API ───────────────────────────────
+    data = _query_tikwm(canonical)
+
+    # Retry once with the original URL if canonical failed
+    if data.get("code") != 0 and canonical != url:
+        logger.warning(f"tikwm failed for canonical URL, retrying with original")
+        data = _query_tikwm(url)
 
     if data.get("code") != 0:
         raise RuntimeError(f"tikwm error {data.get('code')}: {data.get('msg', 'unknown')}")
 
     vdata = data["data"]
 
-    # Pick highest quality watermark-free URL available
+    # size=0 / hd_size=0 means tikwm couldn't retrieve the video
+    hd_size = vdata.get("hd_size", 0) or 0
+    sd_size = vdata.get("size", 0) or 0
+    if hd_size == 0 and sd_size == 0:
+        raise RuntimeError("tikwm returned size=0 — video is private, deleted, or unavailable")
+
     hdplay = vdata.get("hdplay", "").strip()
     play   = vdata.get("play",   "").strip()
 
-    if hdplay:
+    # Reject URLs that point to the music CDN (audio-only, not a video)
+    def _is_music_url(u: str) -> bool:
+        return any(frag in u for frag in _MUSIC_CDN_HOSTS)
+
+    if hdplay and not _is_music_url(hdplay):
         video_url = hdplay
-        quality   = f"HD {vdata.get('hd_size', 0) // 1024} KB"
-    elif play:
+        quality   = f"HD {hd_size // 1024} KB"
+    elif play and not _is_music_url(play):
         video_url = play
-        quality   = f"SD {vdata.get('size', 0) // 1024} KB"
+        quality   = f"SD {sd_size // 1024} KB"
+    elif hdplay:
+        # Both URLs are music CDN — tikwm resolved to audio; bail out
+        raise RuntimeError("tikwm returned a music/audio URL instead of a video — "
+                           "video may be a slideshow or unavailable in this region")
     else:
-        raise RuntimeError("tikwm returned no playable URL")
+        raise RuntimeError("tikwm returned no playable video URL")
 
     logger.info(f"Quality selected: {quality}")
 
-    # ── Step 2: stream download ───────────────────────────────────────────────
+    # ── Step 3: stream download ───────────────────────────────────────────────
     fname  = f"tikwm_{int(time.time() * 1000)}.mp4"
     output = os.path.join(config.DOWNLOAD_DIR, fname)
 
     dl_req = urllib.request.Request(video_url, headers=_HEADERS)
+    content_type = ""
     with urllib.request.urlopen(dl_req, timeout=60) as resp, open(output, "wb") as f:
+        content_type = resp.headers.get("Content-Type", "")
         while chunk := resp.read(512 * 1024):
             f.write(chunk)
+
+    # Reject audio-only containers (audio/mp4, audio/x-m4a, etc.)
+    if content_type.startswith("audio/"):
+        os.remove(output)
+        raise RuntimeError(f"Downloaded file is audio-only ({content_type}) — "
+                           "video is a slideshow or not available via tikwm")
 
     size = os.path.getsize(output)
     if size < 50_000:
