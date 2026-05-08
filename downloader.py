@@ -22,16 +22,18 @@ _HEADERS = {
 
 def download_tiktok(url: str) -> str:
     """
-    Download a TikTok video (watermark-free) via tikwm.com API.
+    Download a TikTok video (watermark-free, highest quality) via tikwm.com API.
+    Prefers hdplay (1080p) over play (576p). Logs which quality is selected.
     Returns the absolute path to the downloaded .mp4 file.
     """
     os.makedirs(config.DOWNLOAD_DIR, exist_ok=True)
 
-    # ── Step 1: resolve video URL ─────────────────────────────────────────────
-    params = urllib.parse.urlencode({"url": url, "hd": "1"})
+    # ── Step 1: resolve video URL (POST with hd=1 for highest quality) ────────
+    body = urllib.parse.urlencode({"url": url, "hd": "1"}).encode()
     req = urllib.request.Request(
-        f"https://www.tikwm.com/api/?{params}",
-        headers=_HEADERS,
+        "https://www.tikwm.com/api/",
+        data=body,
+        headers={**_HEADERS, "Content-Type": "application/x-www-form-urlencoded"},
     )
     with urllib.request.urlopen(req, timeout=15) as resp:
         data = json.loads(resp.read())
@@ -40,9 +42,21 @@ def download_tiktok(url: str) -> str:
         raise RuntimeError(f"tikwm error {data.get('code')}: {data.get('msg', 'unknown')}")
 
     vdata = data["data"]
-    video_url = vdata.get("hdplay") or vdata.get("play")
-    if not video_url:
+
+    # Pick highest quality watermark-free URL available
+    hdplay = vdata.get("hdplay", "").strip()
+    play   = vdata.get("play",   "").strip()
+
+    if hdplay:
+        video_url = hdplay
+        quality   = f"HD {vdata.get('hd_size', 0) // 1024} KB"
+    elif play:
+        video_url = play
+        quality   = f"SD {vdata.get('size', 0) // 1024} KB"
+    else:
         raise RuntimeError("tikwm returned no playable URL")
+
+    logger.info(f"Quality selected: {quality}")
 
     # ── Step 2: stream download ───────────────────────────────────────────────
     fname  = f"tikwm_{int(time.time() * 1000)}.mp4"
@@ -58,5 +72,5 @@ def download_tiktok(url: str) -> str:
         os.remove(output)
         raise RuntimeError(f"Download too small ({size} bytes) — video may be private or deleted")
 
-    logger.info(f"Downloaded {size / 1024 / 1024:.1f} MB → {fname}")
+    logger.info(f"Downloaded {size / 1024 / 1024:.1f} MB ({quality}) → {fname}")
     return output
